@@ -27,21 +27,39 @@ def run_gf(urls: list[str], pattern: str) -> list[str]:
         proc = subprocess.run(
             [os.path.expanduser(TOOL_PATHS["gf"]), pattern],
             input="\n".join(urls),
-            capture_output=True,
-            text=True,
-            timeout=30,
+            capture_output=True, text=True, timeout=30,
         )
         return [l.strip() for l in proc.stdout.splitlines() if l.strip()]
     except Exception:
         return []
 
 
+def get_base_size(base_url: str) -> int:
+    """Ana sayfa boyutunu ölç — ffuf false positive filtresi için."""
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-o", "/dev/null", "-w", "%{size_download}",
+             f"{base_url}/penbot_nonexistent_path_12345"],
+            capture_output=True, text=True, timeout=10,
+        )
+        size = int(result.stdout.strip())
+        return size if size > 0 else 0
+    except Exception:
+        return 0
+
+
 def run_ffuf(target: str, aggressive: bool) -> list[dict]:
-    from config import WORDLISTS
-    wordlist = WORDLISTS["dirs"] if aggressive else WORDLISTS["dirs_sm"]
+    wordlist = os.path.expanduser(WORDLISTS["dirs"] if aggressive else WORDLISTS["dirs_sm"])
+    from config import WORDLISTS as WL
+    wordlist = os.path.expanduser(WL["dirs"] if aggressive else WL["dirs_sm"])
+
     base = target.rstrip("/")
     if not base.startswith("http"):
         base = f"https://{base}"
+
+    # Base size ölç — SPA false positive önle
+    base_size = get_base_size(base)
+
     cmd = [
         os.path.expanduser(TOOL_PATHS["ffuf"]),
         "-u", f"{base}/FUZZ",
@@ -51,7 +69,13 @@ def run_ffuf(target: str, aggressive: bool) -> list[dict]:
         "-timeout", "10",
         "-json", "-s",
     ]
+
+    # Base size > 0 ise filtre ekle
+    if base_size > 0:
+        cmd += ["-fs", str(base_size)]
+
     _, out, _ = run_cmd(cmd, timeout=TIMEOUTS["ffuf"])
+
     hits = []
     for line in out.splitlines():
         try:
