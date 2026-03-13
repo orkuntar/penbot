@@ -95,6 +95,7 @@ def parse_args():
     p.add_argument("--passive",        action="store_true")
     p.add_argument("--report",         action="store_true")
     p.add_argument("--report-file",    help="Belirli rapor dosyası")
+    p.add_argument("--pdf", action="store_true", help="PDF rapor üret")
     return p.parse_args()
 
 
@@ -224,7 +225,18 @@ def main():
             pdf_path  = build_pdf(json_path)
             console.print(f'[green]PDF oluşturuldu:[/] [bold]{pdf_path}[/]')
         return
-
+    if args.pdf:
+    from core.report import build_pdf
+    from config import REPORTS_DIR
+    files = sorted([f for f in os.listdir(REPORTS_DIR) if f.endswith(".json")], reverse=True)
+    if not files:
+        console.print("[red]Rapor bulunamadı. Önce tarama yap.[/]")
+        sys.exit(1)
+    json_path = os.path.join(REPORTS_DIR, files[0])
+    pdf_path  = build_pdf(json_path)
+    console.print(f"[green]PDF oluşturuldu:[/] [bold]{pdf_path}[/]")
+    return
+    
     if args.report or args.report_file:
         if args.report_file:
             import json
