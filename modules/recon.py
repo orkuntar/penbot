@@ -4,7 +4,7 @@ from config import TOOL_PATHS, TIMEOUTS
 
 
 def run_subfinder(target: str) -> list[str]:
-    cmd = [TOOL_PATHS["subfinder"], "-d", target, "-silent", "-json"]
+    cmd = [os.path.expanduser(TOOL_PATHS["subfinder"]), "-d", target, "-silent", "-json"]
     _, out, err = run_cmd(cmd, timeout=TIMEOUTS["subfinder"])
     subdomains = []
     for line in out.splitlines():
@@ -20,7 +20,7 @@ def run_subfinder(target: str) -> list[str]:
 
 
 def run_assetfinder(target: str) -> list[str]:
-    cmd = [TOOL_PATHS["assetfinder"], "--subs-only", target]
+    cmd = [os.path.expanduser(TOOL_PATHS["assetfinder"]), "--subs-only", target]
     _, out, _ = run_cmd(cmd, timeout=TIMEOUTS["subfinder"])
     return [l.strip() for l in out.splitlines() if l.strip()]
 
@@ -30,18 +30,17 @@ def run_httpx(hosts: list[str]) -> tuple[list[str], list[str]]:
     if not hosts:
         return [], []
 
+    import subprocess
     input_data = "\n".join(hosts)
+    httpx_bin  = os.path.expanduser(TOOL_PATHS["httpx"])
     cmd = [
-        TOOL_PATHS["httpx"],
+        httpx_bin,
         "-silent", "-json",
         "-tech-detect",
         "-status-code",
         "-title",
         "-no-color",
     ]
-    proc_result = run_cmd(cmd, timeout=TIMEOUTS["httpx"])
-    # httpx stdin bekliyor — pipe ile gönder
-    import subprocess, shlex
     try:
         result = subprocess.run(
             cmd,

@@ -1,78 +1,112 @@
+import os
+import json
 import subprocess
 from core.engine import run_cmd
-from config import TOOL_PATHS, WORDLISTS, TIMEOUTS
-
-# GF pattern'leri — ilginç URL adayları
-GF_PATTERNS = ["sqli", "xss", "ssrf", "redirect", "rce", "idor", "lfi", "ssti"]
+from config import TOOL_PATHS, TIMEOUTS, NUCLEI_TAGS
 
 
-def run_gau(target: str) -> list[str]:
-    cmd = [TOOL_PATHS["gau"], "--threads", "5", "--timeout", "10", target]
-    _, out, _ = run_cmd(cmd, timeout=TIMEOUTS["gau"])
-    return [l.strip() for l in out.splitlines() if l.strip()]
-
-
-def run_waybackurls(target: str) -> list[str]:
-    cmd = f"echo {target} | {TOOL_PATHS['waybackurls']}"
-    _, out, _ = run_cmd(cmd, timeout=TIMEOUTS["waybackurls"], shell=True)
-    return [l.strip() for l in out.splitlines() if l.strip()]
-
-
-def run_gf(urls: list[str], pattern: str) -> list[str]:
-    if not urls:
+def run_nuclei(targets: list[str], aggressive: bool) -> list[dict]:
+    if not targets:
         return []
+
+    tags  = NUCLEI_TAGS["aggressive"] if aggressive else NUCLEI_TAGS["active"]
+    hosts = "\n".join(
+        h.split("] ")[-1] if "] " in h else h
+        for h in targets[:50]
+    )
+
+    cmd = [
+        os.path.expanduser(TOOL_PATHS["nuclei"]),
+        "-tags", tags,
+        "-json",
+        "-silent",
+        "-c", "25",
+        "-timeout", "10",
+        "-no-color",
+    ]
+
     try:
-        proc = subprocess.run(
-            [TOOL_PATHS["gf"], pattern],
-            input="\n".join(urls),
+        result = subprocess.run(
+            cmd,
+            input=hosts,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=TIMEOUTS["nuclei"],
         )
-        return [l.strip() for l in proc.stdout.splitlines() if l.strip()]
+        out = result.stdout
     except Exception:
         return []
 
-
-def run_ffuf(target: str, aggressive: bool) -> list[dict]:
-    wordlist = WORDLISTS["dirs"] if aggressive else WORDLISTS["dirs_sm"]
-    base = target.rstrip("/")
-    if not base.startswith("http"):
-        base = f"https://{base}"
-
-    cmd = [
-        TOOL_PATHS["ffuf"],
-        "-u", f"{base}/FUZZ",
-        "-w", wordlist,
-        "-mc", "200,201,204,301,302,307,401,403,405",
-        "-t", "40" if aggressive else "20",
-        "-timeout", "10",
-        "-json",
-        "-s",
-    ]
-    _, out, _ = run_cmd(cmd, timeout=TIMEOUTS["ffuf"])
-
-    hits = []
+    findings = []
     for line in out.splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            import json
             obj = json.loads(line)
-            results = obj.get("results", [obj])
-            for r in results:
-                url    = r.get("url", "")
-                status = r.get("status", 0)
-                length = r.get("length", 0)
-                if url:
-                    hits.append({"url": url, "status": status, "length": length})
-        except Exception:
+            findings.append({
+                "template-id": obj.get("template-id", ""),
+                "name":        obj.get("info", {}).get("name", ""),
+                "severity":    obj.get("info", {}).get("severity", "info"),
+                "host":        obj.get("host", ""),
+                "url":         obj.get("matched-at", ""),
+                "tags":        obj.get("info", {}).get("tags", []),
+                "description": obj.get("info", {}).get("description", ""),
+            })
+        except json.JSONDecodeError:
             pass
-    return hits
+
+    return findings
 
 
-def run_crawl(target: str, alive_hosts: list[str], aggressive: bool, progress_cb=None) -> dict:
+def run_arjun(urls: list[str]) -> dict:
+    """Her URL için gizli parametreleri bul."""
+    if not urls:
+        return {}
+
+    # Arjun için ilginç URL'leri seç (parametre içerebilecekler)
+    candidates = [u for u in urls if "?" in u or any(
+        x in u for x in ["/api/", "/v1/", "/v2/", "/search", "/query", "/get", "/fetch"]
+    )][:10]
+
+    if not candidates:
+        return {}
+
+    params_found = {}
+    for url in candidates:
+        cmd = ["arjun", "-u", url, "--json", "-q"]
+        _, out, _ = run_cmd(cmd, timeout=TIMEOUTS["arjun"])
+        for line in out.splitlines():
+            try:
+                obj = json.loads(line)
+                found = obj.get("params", [])
+                if found:
+                    params_found[url] = found
+            except Exception:
+                pass
+
+    return params_found
+
+
+def run_jwt_check(urls: list[str]) -> list[dict]:
+    """URL'lerde JWT içerip içermediğini kontrol et."""
+    jwt_findings = []
+    for url in urls:
+        if any(keyword in url.lower() for keyword in ["token", "jwt", "auth", "bearer"]):
+            jwt_findings.append({
+                "url":  url,
+                "note": "JWT/token parametresi tespit edildi — manuel analiz önerilir",
+            })
+    return jwt_findings[:10]
+
+
+def run_vuln(
+    target: str,
+    alive_hosts: list[str],
+    interesting_urls: list[str],
+    aggressive: bool,
+    progress_cb=None,
+) -> dict:
     results = {}
 
     def upd(name, status, pct):
@@ -81,40 +115,24 @@ def run_crawl(target: str, alive_hosts: list[str], aggressive: bool, progress_cb
 
     from concurrent.futures import ThreadPoolExecutor
 
-    # URL toplama
-    upd("gau", "running", 0.0)
-    upd("waybackurls", "running", 0.0)
+    # Nuclei + Arjun paralel
+    upd("nuclei", "running", 0.0)
+    upd("arjun",  "running", 0.0)
 
     with ThreadPoolExecutor(max_workers=2) as ex:
-        f1 = ex.submit(run_gau, target)
-        f2 = ex.submit(run_waybackurls, target)
-        gau_urls = f1.result()
-        upd("gau", "done", 1.0)
-        wb_urls  = f2.result()
-        upd("waybackurls", "done", 1.0)
+        f1 = ex.submit(run_nuclei, alive_hosts, aggressive)
+        f2 = ex.submit(run_arjun,  interesting_urls)
+        nuclei_findings = f1.result()
+        upd("nuclei", "done", 1.0)
+        hidden_params = f2.result()
+        upd("arjun", "done", 1.0)
 
-    all_urls = list(set(gau_urls + wb_urls))
-    results["urls"] = all_urls
+    results["nuclei_findings"] = nuclei_findings
+    results["hidden_params"]   = hidden_params
 
-    # GF pattern eşleştirme
-    upd("gf_patterns", "running", 0.0)
-    gf_matches = {}
-    for p in GF_PATTERNS:
-        gf_matches[p] = run_gf(all_urls, p)
-    results["gf_matches"]      = gf_matches
-    results["interesting_urls"] = [
-        u for matches in gf_matches.values() for u in matches
-    ]
-    upd("gf_patterns", "done", 1.0)
-
-    # ffuf — sadece ilk canlı host üzerinde
-    if alive_hosts:
-        upd("ffuf", "running", 0.0)
-        first_host = alive_hosts[0].split("] ")[-1] if "] " in alive_hosts[0] else alive_hosts[0]
-        hits = run_ffuf(first_host, aggressive)
-        results["ffuf_hits"] = hits
-        upd("ffuf", "done", 1.0)
-    else:
-        results["ffuf_hits"] = []
+    # JWT kontrol
+    upd("jwt_check", "running", 0.0)
+    results["jwt_findings"] = run_jwt_check(interesting_urls)
+    upd("jwt_check", "done", 1.0)
 
     return results
