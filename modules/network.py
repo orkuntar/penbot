@@ -6,7 +6,6 @@ from config import TOOL_PATHS, TIMEOUTS
 
 
 def run_naabu(target: str, aggressive: bool) -> list[dict]:
-    """Hızlı port tarama — naabu."""
     naabu_bin = os.path.expanduser(TOOL_PATHS["naabu"])
     ports     = "1-65535" if aggressive else "top-1000"
     try:
@@ -30,86 +29,87 @@ def run_naabu(target: str, aggressive: bool) -> list[dict]:
                 if ":" in line:
                     parts = line.strip().split(":")
                     if len(parts) == 2:
-                        findings.append({"host": parts[0], "ip": "", "port": int(parts[1])})
+                        try:
+                            findings.append({"host": parts[0], "ip": "", "port": int(parts[1])})
+                        except Exception:
+                            pass
         return findings
     except Exception:
         return []
 
 
 def run_testssl(host: str) -> dict:
-    """SSL/TLS analiz — testssl.sh."""
+    """SSL/TLS tam analiz — testssl.sh (primary, güvenilir)."""
     testssl_path = os.path.expanduser(TOOL_PATHS["testssl"])
     if not os.path.exists(testssl_path):
-        return {}
+        return {"error": "testssl.sh bulunamadı"}
+
+    out_file = "/tmp/penbot_testssl.json"
     try:
-        result = subprocess.run(
+        subprocess.run(
             ["bash", testssl_path,
-             "--jsonfile", "/tmp/testssl_out.json",
+             "--jsonfile", out_file,
              "--quiet", "--color", "0",
+             "--protocols",
+             "--vulnerable",
+             "--headers",
+             "--cipher-per-proto",
              host],
             capture_output=True, text=True, timeout=TIMEOUTS["testssl"],
         )
-        # JSON çıktısını oku
-        if os.path.exists("/tmp/testssl_out.json"):
-            with open("/tmp/testssl_out.json") as f:
-                data = json.load(f)
-            findings = []
-            for entry in data:
-                if isinstance(entry, dict):
-                    severity = entry.get("severity", "INFO")
-                    if severity in ("HIGH", "CRITICAL", "MEDIUM"):
-                        findings.append({
-                            "id":       entry.get("id", ""),
-                            "finding":  entry.get("finding", ""),
-                            "severity": severity,
-                        })
-            return {"findings": findings, "raw_count": len(data)}
-    except Exception:
-        pass
-    return {}
 
+        if not os.path.exists(out_file):
+            return {"error": "testssl çıktısı oluşturulamadı"}
 
-def run_sslscan(host: str) -> dict:
-    """SSL/TLS tarama — sslscan."""
-    try:
-        result = subprocess.run(
-            ["sslscan", "--no-colour", host],
-            capture_output=True, text=True, timeout=TIMEOUTS["sslscan"],
-        )
-        out = result.stdout
-        findings = []
+        with open(out_file) as f:
+            raw = json.load(f)
 
-        # Kritik bulgular
-        checks = [
-            ("SSLv2",        "SSLv2 enabled",     "CRITICAL"),
-            ("SSLv3",        "SSLv3 enabled",     "HIGH"),
-            ("TLSv1.0",      "TLSv1.0 enabled",   "MEDIUM"),
-            ("TLSv1.1",      "TLSv1.1 enabled",   "MEDIUM"),
-            ("RC4",          "RC4 cipher",         "HIGH"),
-            ("DES",          "DES cipher",         "HIGH"),
-            ("EXPORT",       "EXPORT cipher",      "CRITICAL"),
-            ("NULL",         "NULL cipher",        "CRITICAL"),
-            ("Heartbleed",   "Heartbleed",         "CRITICAL"),
-            ("POODLE",       "POODLE",             "HIGH"),
-            ("ROBOT",        "ROBOT",              "HIGH"),
-        ]
-        for keyword, desc, severity in checks:
-            if keyword.lower() in out.lower():
-                findings.append({"finding": desc, "severity": severity})
+        findings   = []
+        proto_info = []
 
-        return {"findings": findings, "raw": out[:500]}
-    except Exception:
-        return {}
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+
+            severity = entry.get("severity", "INFO")
+            finding  = entry.get("finding", "")
+            eid      = entry.get("id", "")
+
+            # Protokol bilgisi
+            if eid in ("SSLv2", "SSLv3", "TLS1", "TLS1_1", "TLS1_2", "TLS1_3"):
+                proto_info.append({
+                    "protocol": eid,
+                    "status":   finding,
+                    "severity": severity,
+                })
+
+            # Sadece kritik/yüksek/medium bulgular
+            if severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+                findings.append({
+                    "id":       eid,
+                    "finding":  finding,
+                    "severity": severity,
+                })
+
+        return {
+            "findings":   findings,
+            "protocols":  proto_info,
+            "raw_count":  len(raw),
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        if os.path.exists(out_file):
+            os.remove(out_file)
 
 
 def run_subzy(subdomains: list[str]) -> list[dict]:
-    """Subdomain takeover kontrolü."""
     if not subdomains:
         return []
-    subzy_bin = os.path.expanduser(TOOL_PATHS["subzy"])
 
-    # Subdomain listesini dosyaya yaz
-    sub_file = "/tmp/penbot_subs.txt"
+    subzy_bin = os.path.expanduser(TOOL_PATHS["subzy"])
+    sub_file  = "/tmp/penbot_subs.txt"
     with open(sub_file, "w") as f:
         f.write("\n".join(subdomains))
 
@@ -133,17 +133,17 @@ def run_subzy(subdomains: list[str]) -> list[dict]:
 
 
 def run_gowitness(alive_hosts: list[str]) -> list[str]:
-    """Screenshot al — gowitness."""
     if not alive_hosts:
         return []
 
     from config import SCREENSHOTS_DIR
-    gw_bin = os.path.expanduser(TOOL_PATHS["gowitness"])
-    hosts  = "\n".join(
+    gw_bin     = os.path.expanduser(TOOL_PATHS["gowitness"])
+    hosts_file = "/tmp/penbot_hosts.txt"
+
+    hosts = "\n".join(
         h.split("] ")[-1] if "] " in h else h
         for h in alive_hosts[:20]
     )
-    hosts_file = "/tmp/penbot_hosts.txt"
     with open(hosts_file, "w") as f:
         f.write(hosts)
 
@@ -155,16 +155,21 @@ def run_gowitness(alive_hosts: list[str]) -> list[str]:
              "--no-http"],
             capture_output=True, text=True, timeout=TIMEOUTS["gowitness"],
         )
-        screenshots = [
+        return [
             f for f in os.listdir(SCREENSHOTS_DIR)
             if f.endswith(".png")
         ]
-        return screenshots
     except Exception:
         return []
 
 
-def run_network(target: str, subdomains: list[str], alive_hosts: list[str], aggressive: bool, progress_cb=None) -> dict:
+def run_network(
+    target: str,
+    subdomains: list[str],
+    alive_hosts: list[str],
+    aggressive: bool,
+    progress_cb=None,
+) -> dict:
     results = {}
 
     def upd(name, status, pct):
@@ -173,28 +178,22 @@ def run_network(target: str, subdomains: list[str], alive_hosts: list[str], aggr
 
     from concurrent.futures import ThreadPoolExecutor
 
-    # Hedef host temizle
     clean_target = target.replace("https://", "").replace("http://", "").split("/")[0]
 
     upd("naabu",     "running", 0.0)
-    upd("sslscan",   "running", 0.0)
+    upd("testssl",   "running", 0.0)
     upd("subzy",     "running", 0.0)
     upd("gowitness", "running", 0.0)
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         f1 = ex.submit(run_naabu,     clean_target, aggressive)
-        f2 = ex.submit(run_sslscan,   clean_target)
+        f2 = ex.submit(run_testssl,   clean_target)
         f3 = ex.submit(run_subzy,     subdomains)
         f4 = ex.submit(run_gowitness, alive_hosts)
 
-        results["naabu_ports"]  = f1.result(); upd("naabu",     "done", 1.0)
-        results["sslscan"]      = f2.result(); upd("sslscan",   "done", 1.0)
-        results["takeover"]     = f3.result(); upd("subzy",     "done", 1.0)
-        results["screenshots"]  = f4.result(); upd("gowitness", "done", 1.0)
-
-    # testssl ayrı çalıştır (uzun sürüyor)
-    upd("testssl", "running", 0.0)
-    results["testssl"] = run_testssl(clean_target)
-    upd("testssl", "done", 1.0)
+        results["naabu_ports"] = f1.result(); upd("naabu",     "done", 1.0)
+        results["testssl"]     = f2.result(); upd("testssl",   "done", 1.0)
+        results["takeover"]    = f3.result(); upd("subzy",     "done", 1.0)
+        results["screenshots"] = f4.result(); upd("gowitness", "done", 1.0)
 
     return results
