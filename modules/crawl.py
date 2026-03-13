@@ -2,7 +2,7 @@ import os
 import json
 import subprocess
 from core.engine import run_cmd
-from config import TOOL_PATHS, TIMEOUTS
+from config import TOOL_PATHS, TIMEOUTS, WORDLISTS
 
 GF_PATTERNS = ["sqli", "xss", "ssrf", "redirect", "rce", "idor", "lfi", "ssti"]
 
