@@ -1,18 +1,21 @@
-# core/report.py dosyasındaki build_pdf fonksiyonu (ilgili kısım güncellenmiş hali)
-
+# core/report.py
 from reportlab.lib import colors
 from reportlab.platypus import Paragraph, Table, TableStyle, Spacer, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
-from reportlab.graphics.shapes import Drawing, String
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 from datetime import datetime
 import json
 import os
+import re
 
-# ... (diğer import'lar ve sabitler aynı kalabilir)
+# ── CONFIG ───────────────────────────────────────────────────────────────
+from config import REPORTS_DIR
+
+# Klasör yoksa oluştur
+os.makedirs(REPORTS_DIR, exist_ok=True)
 
 def safe_hex_color(color_value):
     """
@@ -21,30 +24,30 @@ def safe_hex_color(color_value):
     if not color_value:
         return "#000000"
     
-    # string'e çevir ve küçük harfe getir
     raw = str(color_value).lower().strip()
-    
-    # başındaki #, 0x, x gibi şeyleri temizle
     cleaned = raw.lstrip('#0x')
     
-    # hex karakter kontrolü
     hex_chars = set('0123456789abcdef')
     if len(cleaned) == 6 and all(c in hex_chars for c in cleaned):
         return f"#{cleaned}"
     
-    # 3 haneli shorthand (#rgb) → 6 haneye çevir
     if len(cleaned) == 3 and all(c in hex_chars for c in cleaned):
         return f"#{cleaned[0]*2}{cleaned[1]*2}{cleaned[2]*2}"
     
-    # geçersiz → güvenli varsayılan renk
     print(f"Uyarı: Geçersiz renk değeri '{raw}' → gri kullanılıyor")
     return "#808080"
 
 
 def build_pdf(json_path: str) -> str:
+    """
+    JSON rapor dosyasından PDF üretir
+    """
     # JSON dosyasını oku
-    with open(json_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception as e:
+        raise ValueError(f"JSON okuma hatası: {e}")
 
     meta = data.get("meta", {})
     results = data.get("results", {})
@@ -53,10 +56,12 @@ def build_pdf(json_path: str) -> str:
     mode = meta.get("mode", "Bilinmeyen mod")
     timestamp = meta.get("timestamp", datetime.now().isoformat())
 
-    pdf_filename = f"report_{target.replace('.', '_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+    # Güvenli dosya adı oluştur
+    safe_target = re.sub(r'[^a-zA-Z0-9_-]', '_', target.strip())
+    pdf_filename = f"report_{safe_target}_{datetime.now():%Y%m%d_%H%M}.pdf"
     pdf_path = os.path.join(REPORTS_DIR, pdf_filename)
 
-    from reportlab.pdfgen import canvas
+    # PDF oluşturma
     c = canvas.Canvas(pdf_path, pagesize=A4)
     width, height = A4
 
@@ -74,7 +79,7 @@ def build_pdf(json_path: str) -> str:
         "tc": ParagraphStyle('TableCell', parent=styles['Normal'], alignment=TA_LEFT, fontSize=10),
     }
 
-    # Başlık
+    # ── Sayfa 1: Başlık ─────────────────────────────────────────────────────
     c.setFont("Helvetica-Bold", 20)
     c.drawCentredString(width/2, height - 40*mm, "GREYPHANTOM v3 - Pentest Raporu")
     c.setFont("Helvetica", 12)
@@ -98,47 +103,48 @@ def build_pdf(json_path: str) -> str:
     }
 
     summary_text = f"""
-    Toplam subdomain: {len(results.get('subdomains', []))}<br/>
-    Canlı host: {len(results.get('alive_hosts', []))}<br/>
-    Keşfedilen URL: {len(results.get('urls', []))}<br/>
-    Bulunan secret: {len(results.get('js_secrets', [])) + len(results.get('secret_findings', []))}<br/>
-    Nuclei bulguları: {len(results.get('nuclei_findings', []))}<br/>
+    <b>Toplam subdomain:</b> {len(results.get('subdomains', []))}<br/>
+    <b>Canlı host:</b> {len(results.get('alive_hosts', []))}<br/>
+    <b>Keşfedilen URL:</b> {len(results.get('urls', []))}<br/>
+    <b>Bulunan secret:</b> {len(results.get('js_secrets', [])) + len(results.get('secret_findings', []))}<br/>
+    <b>Nuclei bulguları:</b> {len(results.get('nuclei_findings', []))}<br/>
     """
     p = Paragraph(summary_text, ST["normal"])
-    w, h = p.wrap(width - 40*mm, y - 100*mm)
+    w, h = p.wrap(width - 40*mm, height)
     p.drawOn(c, 20*mm, y - h)
-    y -= (h + 10*mm)
+    y -= (h + 15*mm)
 
-    # ── Vulnerability Tablosu Örneği ────────────────────────────────────────
+    # ── Kritik & Yüksek Bulgular Tablosu ────────────────────────────────────
     c.setFont("Helvetica-Bold", 14)
     c.drawString(20*mm, y, "2. Kritik & Yüksek Bulgular")
     y -= 10*mm
 
     table_data = [["Seviye", "Açıklama", "URL", "Detay"]]
-    for finding in results.get("nuclei_findings", [])[:20]:  # ilk 20 ile sınırlı örnek
-        sev = finding.get("info", {}).get("severity", "unknown").upper()
-        name = finding.get("info", {}).get("name", "İsimsiz")
-        url = finding.get("host", "") + finding.get("matched-at", "")
-        
-        # RENK DÜZELTME BURADA YAPILIYOR
-        color_str = {
+
+    for finding in results.get("nuclei_findings", [])[:30]:  # ilk 30 ile sınırlı
+        info = finding.get("info", {})
+        sev = info.get("severity", "unknown").upper()
+        name = info.get("name", "İsimsiz")
+        url = (finding.get("host", "") + finding.get("matched-at", "")).strip()
+        desc = info.get("description", "")[:150] + ("..." if len(info.get("description", "")) > 150 else "")
+
+        color_map = {
             "CRITICAL": "#ff1493",
             "HIGH":     "#ff0000",
             "MEDIUM":   "#ffa500",
             "LOW":      "#008000",
             "INFO":     "#1e90ff",
-        }.get(sev, "#808080")
-        
-        # ya da fg objen varsa:
-        # color_str = safe_hex_color(fg)   # ← senin orijinal fg objen varsa
+            "UNKNOWN":  "#808080"
+        }
+        color_str = color_map.get(sev, "#808080")
 
         cell_sev = Paragraph(f'<font color="{color_str}"><b>{sev}</b></font>', ST["tc"])
-        
+
         table_data.append([
             cell_sev,
             Paragraph(name, ST["tc"]),
             Paragraph(url[:80] + "..." if len(url) > 80 else url, ST["small"]),
-            Paragraph(finding.get("info", {}).get("description", "")[:120] + "...", ST["small"])
+            Paragraph(desc, ST["small"])
         ])
 
     if len(table_data) > 1:
@@ -152,12 +158,15 @@ def build_pdf(json_path: str) -> str:
             ('BOTTOMPADDING', (0,0), (-1,0), 12),
             ('GRID', (0,0), (-1,-1), 1, colors.black),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('BOX', (0,0), (-1,-1), 1, colors.black),
         ]))
-        w, h = t.wrapOn(c, width - 40*mm, 100*mm)
-        t.drawOn(c, 20*mm, y - h)
-        y -= (h + 15*mm)
+        tw, th = t.wrapOn(c, width - 40*mm, y - 50*mm)
+        t.drawOn(c, 20*mm, y - th)
+        y -= (th + 20*mm)
 
-    # ... diğer bölümleri aynı şekilde devam ettirebilirsin
-
+    # ── Sonlandırma ─────────────────────────────────────────────────────────
+    c.showPage()
     c.save()
+
+    print(f"PDF oluşturuldu: {pdf_path}")
     return pdf_path

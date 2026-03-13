@@ -76,3 +76,14 @@ TIMEOUTS = {
     "corsy":         60,
     "trufflehog":   120,
 }
+
+try:
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+except NameError:
+    PROJECT_ROOT = os.getcwd()                      # veya "/home/ork/penbot"
+
+REPORTS_DIR     = os.path.join(PROJECT_ROOT, "reports")
+SCREENSHOTS_DIR = os.path.join(PROJECT_ROOT, "screenshots")
+
+os.makedirs(REPORTS_DIR,     exist_ok=True)
+os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
