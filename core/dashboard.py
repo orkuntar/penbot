@@ -17,7 +17,7 @@ BANNER = """[bold red]
  ██╔═══╝ ██╔══╝  ██║╚████║██╔══██╗██║   ██║   ██║
  ██║     ███████╗██║ ╚███║██████╔╝╚██████╔╝   ██║
  ╚═╝     ╚══════╝╚═╝  ╚══╝╚═════╝  ╚═════╝    ╚═╝[/]
-[dim]  by Orkun — Automated Pentest Framework[/]
+[dim]  by GREYPHANTOM — Automated Pentest Framework[/]
 """
 
 def print_banner():
