@@ -29,6 +29,9 @@ python penbot.py --target hedef.com --passive
 
 # Son taramayı Claude'a yapıştırmak için
 python penbot.py --report
+
+# Full Tarama + PDF Rapor
+python3 penbot.py -t ... --passive && python3 penbot.py --pdf
 ```
 
 ## Modlar
@@ -52,3 +55,4 @@ ffuf, nuclei, arjun, gf, jwt_tool
 
 `reports/` klasöründe JSON olarak kaydedilir.
 `python penbot.py --report` ile son taramayı Claude formatında görebilirsin.
+
