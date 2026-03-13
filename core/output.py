@@ -5,10 +5,10 @@ from config import REPORTS_DIR
 
 
 def save_scan(target: str, mode: str, aggressive: bool, results: dict) -> str:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_target = target.replace("https://", "").replace("http://", "").replace("/", "_")
-    filename = f"{safe_target}_{mode}_{timestamp}.json"
-    filepath = os.path.join(REPORTS_DIR, filename)
+    filename   = f"{safe_target}_{mode}_{timestamp}.json"
+    filepath   = os.path.join(REPORTS_DIR, filename)
 
     data = {
         "meta": {
@@ -16,14 +16,12 @@ def save_scan(target: str, mode: str, aggressive: bool, results: dict) -> str:
             "mode":       mode,
             "aggressive": aggressive,
             "timestamp":  datetime.now().isoformat(),
-            "tool":       "penbot",
+            "tool":       "GREYPHANTOM",
         },
         "results": results,
     }
-
     with open(filepath, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-
     return filepath
 
 
@@ -38,108 +36,173 @@ def load_last_scan() -> dict | None:
         return json.load(f)
 
 
+def _sev_order(sev: str) -> int:
+    return {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}.get(sev.lower(), 9)
+
+
 def format_for_claude(data: dict) -> str:
     meta    = data.get("meta", {})
     results = data.get("results", {})
-
-    lines = [
-        "=" * 60,
-        "PENBOT — CLAUDE ANALİZ ÖZET",
-        "=" * 60,
+    lines   = [
+        "=" * 65,
+        "GREYPHANTOM — CLAUDE ANALİZ ÖZET",
+        "=" * 65,
         f"Hedef    : {meta.get('target')}",
         f"Mod      : {meta.get('mode')} | Agresif: {'EVET' if meta.get('aggressive') else 'HAYIR'}",
         f"Tarih    : {meta.get('timestamp', '')[:19]}",
         "",
     ]
 
-    # ── Subdomainler ──────────────────────────────────────────────────────────
-    subdomains = results.get("subdomains", [])
-    alive      = results.get("alive_hosts", [])
-    lines += [
-        f"[RECON] Subdomain: {len(subdomains)} bulundu | Canlı: {len(alive)}",
-    ]
-    if alive:
-        lines.append("Canlı hostlar:")
-        for h in alive[:20]:
-            lines.append(f"  {h}")
-        if len(alive) > 20:
-            lines.append(f"  ... ve {len(alive)-20} tane daha")
+    # ── Recon ────────────────────────────────────────────────────────────────
+    subs  = results.get("subdomains", [])
+    alive = results.get("alive_hosts", [])
+    lines += [f"[RECON] Subdomain: {len(subs)} | Canlı: {len(alive)}"]
+    for h in alive[:20]:
+        lines.append(f"  {h}")
+    if len(alive) > 20:
+        lines.append(f"  ... +{len(alive)-20}")
     lines.append("")
 
-    # ── Açık portlar ─────────────────────────────────────────────────────────
+    # ── Portlar ───────────────────────────────────────────────────────────────
+    naabu = results.get("naabu_ports", [])
     ports = results.get("open_ports", {})
-    if ports:
+    if naabu:
+        lines.append(f"[NAABU] {len(naabu)} açık port:")
+        for p in naabu[:20]:
+            lines.append(f"  {p.get('host')}:{p.get('port')}")
+        lines.append("")
+    elif ports:
         lines.append("[NMAP] Açık portlar:")
-        for host, port_list in ports.items():
-            lines.append(f"  {host}: {', '.join(str(p) for p in port_list)}")
+        for host, pl in ports.items():
+            lines.append(f"  {host}: {', '.join(str(p) for p in pl)}")
+        lines.append("")
+
+    # ── SSL/TLS ───────────────────────────────────────────────────────────────
+    ssl = results.get("sslscan", {})
+    if ssl.get("findings"):
+        lines.append("[SSL] Bulgular:")
+        for f in ssl["findings"]:
+            lines.append(f"  [{f['severity']}] {f['finding']}")
+        lines.append("")
+
+    testssl = results.get("testssl", {})
+    if testssl.get("findings"):
+        lines.append("[TESTSSL] Bulgular:")
+        for f in testssl["findings"][:10]:
+            lines.append(f"  [{f['severity']}] {f['finding']}")
         lines.append("")
 
     # ── Teknolojiler ──────────────────────────────────────────────────────────
     techs = results.get("technologies", [])
     if techs:
-        lines.append(f"[FİNGERPRİNT] Tespit edilen teknolojiler: {', '.join(techs[:15])}")
+        lines.append(f"[FİNGERPRİNT] {', '.join(techs[:15])}")
         lines.append("")
 
-    # ── URL'ler ───────────────────────────────────────────────────────────────
-    urls = results.get("urls", [])
-    interesting = results.get("interesting_urls", [])
+    # ── URL & Crawl ───────────────────────────────────────────────────────────
+    urls     = results.get("urls", [])
+    int_urls = results.get("interesting_urls", [])
     lines.append(f"[CRAWL] Toplam URL: {len(urls)}")
-    if interesting:
-        lines.append("Dikkat çeken URL'ler (SQLi/XSS/SSRF adayları):")
-        for u in interesting[:15]:
+    if int_urls:
+        lines.append("Dikkat çeken URL'ler:")
+        for u in int_urls[:15]:
             lines.append(f"  {u}")
     lines.append("")
 
-    # ── Nuclei bulguları ──────────────────────────────────────────────────────
-    nuclei = results.get("nuclei_findings", [])
+    # ── API Endpoints ─────────────────────────────────────────────────────────
+    kr_eps  = results.get("kr_endpoints", [])
+    api_eps = results.get("api_endpoints", [])
+    if kr_eps or api_eps:
+        lines.append(f"[API] Kiterunner: {len(kr_eps)} | FFUF: {len(api_eps)}")
+        for ep in (kr_eps + api_eps)[:20]:
+            lines.append(f"  [{ep.get('status')}] {ep.get('url')}")
+        lines.append("")
+
+    # ── CORS ─────────────────────────────────────────────────────────────────
+    cors = results.get("cors_findings", [])
+    if cors:
+        lines.append(f"[CORS] {len(cors)} bulgu:")
+        for c in cors:
+            lines.append(f"  {c.get('url')}: {c.get('finding','')[:100]}")
+        lines.append("")
+
+    # ── GraphQL ───────────────────────────────────────────────────────────────
+    gql = results.get("graphql", [])
+    if gql:
+        lines.append(f"[GRAPHQL] {len(gql)} endpoint tespit edildi")
+        lines.append("")
+
+    # ── JS Analiz ─────────────────────────────────────────────────────────────
+    js_files    = results.get("js_files", [])
+    js_secrets  = results.get("js_secrets", [])
+    js_eps      = results.get("js_endpoints", [])
+    trufflehog  = results.get("trufflehog", [])
+    if js_files:
+        lines.append(f"[JS] {len(js_files)} JS dosyası, {len(js_eps)} endpoint, {len(js_secrets)} secret")
+        for s in js_secrets[:10]:
+            lines.append(f"  [HIGH] {s.get('finding','')[:100]} → {s.get('source','')}")
+        for t in trufflehog[:5]:
+            sev = "CRITICAL" if t.get("verified") else "MEDIUM"
+            lines.append(f"  [{sev}] {t.get('detector')}: {t.get('raw','')[:80]}")
+        lines.append("")
+
+    # ── Subdomain Takeover ────────────────────────────────────────────────────
+    takeover = results.get("takeover", [])
+    if takeover:
+        lines.append(f"[TAKEOVER] {len(takeover)} VULNERABLE:")
+        for t in takeover:
+            lines.append(f"  [HIGH] {t.get('subdomain')}")
+        lines.append("")
+
+    # ── Nuclei ────────────────────────────────────────────────────────────────
+    nuclei = sorted(
+        results.get("nuclei_findings", []),
+        key=lambda x: _sev_order(x.get("severity", "info"))
+    )
     if nuclei:
         lines.append(f"[NUCLEİ] {len(nuclei)} bulgu:")
-        # Severity sıralaması
-        order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-        nuclei_sorted = sorted(nuclei, key=lambda x: order.get(x.get("severity", "info").lower(), 9))
-        for n in nuclei_sorted[:30]:
+        for n in nuclei[:30]:
             sev  = n.get("severity", "?").upper()
             name = n.get("template-id", n.get("name", "?"))
             host = n.get("host", "")
             lines.append(f"  [{sev}] {name} → {host}")
         if len(nuclei) > 30:
-            lines.append(f"  ... ve {len(nuclei)-30} tane daha")
+            lines.append(f"  ... +{len(nuclei)-30}")
     else:
         lines.append("[NUCLEİ] Bulgu yok")
     lines.append("")
 
-    # ── Gizli parametreler ────────────────────────────────────────────────────
+    # ── Gizli Parametreler ────────────────────────────────────────────────────
     params = results.get("hidden_params", {})
     if params:
         lines.append("[ARJUN] Gizli parametreler:")
-        for url, param_list in params.items():
-            lines.append(f"  {url}: {', '.join(param_list)}")
+        for url, pl in params.items():
+            lines.append(f"  {url}: {', '.join(pl)}")
         lines.append("")
 
-    # ── GF pattern eşleşmeleri ────────────────────────────────────────────────
+    # ── GF Patterns ───────────────────────────────────────────────────────────
     gf = results.get("gf_matches", {})
     if gf:
         lines.append("[GF] Pattern eşleşmeleri:")
         for pattern, matches in gf.items():
             if matches:
                 lines.append(f"  {pattern}: {len(matches)} adet")
-                for m in matches[:5]:
+                for m in matches[:3]:
                     lines.append(f"    {m}")
         lines.append("")
 
-    # ── ffuf dizinleri ────────────────────────────────────────────────────────
+    # ── ffuf ─────────────────────────────────────────────────────────────────
     ffuf_hits = results.get("ffuf_hits", [])
     if ffuf_hits:
-        lines.append(f"[FFUF] Bulunan {len(ffuf_hits)} dizin/dosya:")
-        for hit in ffuf_hits[:20]:
-            lines.append(f"  [{hit.get('status')}] {hit.get('url')} ({hit.get('length','?')} byte)")
+        lines.append(f"[FFUF] {len(ffuf_hits)} dizin/dosya:")
+        for h in ffuf_hits[:15]:
+            lines.append(f"  [{h.get('status')}] {h.get('url')}")
         lines.append("")
 
     lines += [
-        "=" * 60,
-        "Bu çıktıyı Claude'a yapıştır ve şunu söyle:",
-        "'Bu pentest taramasını analiz et, öncelikli saldırı vektörlerini ve exploit adımlarını söyle.'",
-        "=" * 60,
+        "=" * 65,
+        "Bu çıktıyı Claude'a yapıştır:",
+        "'Bu pentest taramasını analiz et, öncelikli saldırı",
+        " vektörlerini ve exploit adımlarını söyle.'",
+        "=" * 65,
     ]
-
     return "\n".join(lines)
