@@ -1,6 +1,6 @@
 # penbot 🔴
 
-Automated Pentest Framework — by Orkun
+Automated Pentest Framework — by GREYPHANTOM
 
 ## Kurulum
 

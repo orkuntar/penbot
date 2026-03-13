@@ -63,7 +63,7 @@ def run_httpx(hosts: list[str]) -> tuple[list[str], list[str]]:
         try:
             obj = json.loads(line)
             url = obj.get("url", "")
-            sc  = obj.get("status-code", 0)
+            sc  = obj.get("status_code", obj.get("status-code", 0))
             if url and sc:
                 alive.append(f"[{sc}] {url}")
             for t in obj.get("tech", []):
