@@ -202,7 +202,16 @@ def run_scan(target: str, mode: str, aggressive: bool):
         },
         "results": all_results,
     })
-    console.print("\n" + output)
+console.print("\n" + output)
+
+    # Otomatik PDF üret
+    try:
+        from core.report import build_pdf
+        pdf_path = build_pdf(report_path)
+        console.print(f"\n[green]PDF rapor:[/] [bold]{pdf_path}[/]")
+    except Exception as e:
+        console.print(f"[yellow]PDF oluşturulamadı:[/] {e}")
+
     return all_results
 
 
