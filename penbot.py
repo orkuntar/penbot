@@ -194,15 +194,16 @@ def run_scan(target: str, mode: str, aggressive: bool):
     console.print(f"\n[dim]Rapor:[/] [bold]{report_path}[/]")
 
     output = format_for_claude({
-        "meta":    {
-            "target":    target,
-            "mode":      mode,
+        "meta": {
+            "target": target,
+            "mode": mode,
             "aggressive": aggressive,
             "timestamp": __import__("datetime").datetime.now().isoformat(),
         },
         "results": all_results,
     })
-console.print("\n" + output)
+
+    console.print("\n" + output)
 
     # Otomatik PDF üret
     try:
